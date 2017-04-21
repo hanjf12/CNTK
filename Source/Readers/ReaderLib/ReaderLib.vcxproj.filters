@@ -138,6 +138,9 @@
     <ClCompile Include="ReaderUtil.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="DataDeserializerBase.cpp">
+      <Filter>Deserializers</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Interfaces">

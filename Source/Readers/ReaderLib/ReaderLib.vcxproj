@@ -83,6 +83,7 @@
     <ClCompile Include="Bundler.cpp" />
     <ClCompile Include="ChunkCache.cpp" />
     <ClCompile Include="ChunkRandomizer.cpp" />
+    <ClCompile Include="DataDeserializerBase.cpp" />
     <ClCompile Include="Indexer.cpp" />
     <ClCompile Include="NoRandomizer.cpp" />
     <ClCompile Include="BlockRandomizer.cpp" />

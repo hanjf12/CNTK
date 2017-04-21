@@ -37,16 +37,13 @@ template <class ElemType>
 class TextParser<ElemType>::TextDataChunk : public Chunk, public std::enable_shared_from_this<Chunk>
 {
 public:
-    explicit TextDataChunk(const ChunkDescriptor& descriptor, TextParser* parser);
+    explicit TextDataChunk(TextParser* parser);
 
     // Gets sequences by id.
     void GetSequence(size_t sequenceId, std::vector<SequenceDataPtr>& result) override;
 
     // A map from sequence ids to the sequence data.
     std::vector<SequenceBuffer> m_sequenceMap;
-
-    // chunk id (copied from the descriptor)
-    ChunkIdType m_id;
 
     // a non-owned pointer to the parser that created this chunk
     TextParser* m_parser;
@@ -191,14 +188,14 @@ ChunkDescriptions TextParser<ElemType>::GetChunkDescriptions()
     const auto& index = m_indexer->GetIndex();
 
     ChunkDescriptions result;
-    result.reserve(index.m_chunks.size());
-    for (auto const& chunk : index.m_chunks)
+    result.reserve(index.Chunks().size());
+    for (ChunkIdType i = 0; i < index.Chunks().size(); ++i)
     {
         result.push_back(shared_ptr<ChunkDescription>(
-            new ChunkDescription {
-                chunk.m_id,
-                chunk.m_numberOfSamples,
-                chunk.m_numberOfSequences
+            new ChunkDescription{
+                i,
+                index.Chunks()[i].NumSamples(),
+                index.Chunks()[i].Sequences().size()
         }));
     }
 
@@ -209,12 +206,12 @@ template <class ElemType>
 void TextParser<ElemType>::GetSequencesForChunk(ChunkIdType chunkId, std::vector<SequenceDescription>& result)
 {
     const auto& index = m_indexer->GetIndex();
-    const auto& chunk = index.m_chunks[chunkId];
-    result.reserve(chunk.m_sequences.size());
+    const auto& chunk = index.Chunks()[chunkId];
+    result.reserve(chunk.Sequences().size());
 
-    for (size_t sequenceIndex = 0; sequenceIndex < chunk.m_sequences.size(); ++sequenceIndex)
+    for (size_t sequenceIndex = 0; sequenceIndex < chunk.Sequences().size(); ++sequenceIndex)
     {
-        auto const& s = chunk.m_sequences[sequenceIndex];
+        auto const& s = chunk.Sequences()[sequenceIndex];
         result.push_back(
         {
             sequenceIndex,
@@ -226,10 +223,9 @@ void TextParser<ElemType>::GetSequencesForChunk(ChunkIdType chunkId, std::vector
 }
 
 template <class ElemType>
-TextParser<ElemType>::TextDataChunk::TextDataChunk(const ChunkDescriptor& descriptor, TextParser* parser) :
+TextParser<ElemType>::TextDataChunk::TextDataChunk(TextParser* parser) :
     m_parser(parser)
 {
-    m_id = descriptor.m_id;
 }
 
 template <class ElemType>
@@ -245,8 +241,8 @@ void TextParser<ElemType>::TextDataChunk::GetSequence(size_t sequenceId, std::ve
 template <class ElemType>
 ChunkPtr TextParser<ElemType>::GetChunk(ChunkIdType chunkId)
 {
-    const auto& chunkDescriptor = m_indexer->GetIndex().m_chunks[chunkId];
-    auto textChunk = make_shared<TextDataChunk>(chunkDescriptor, this);
+    const auto& chunkDescriptor = m_indexer->GetIndex().Chunks()[chunkId];
+    auto textChunk = make_shared<TextDataChunk>(this);
 
     attempt(m_numRetries, [this, &textChunk, &chunkDescriptor]()
     {
@@ -264,10 +260,10 @@ ChunkPtr TextParser<ElemType>::GetChunk(ChunkIdType chunkId)
 template <class ElemType>
 void TextParser<ElemType>::LoadChunk(TextChunkPtr& chunk, const ChunkDescriptor& descriptor)
 {
-    chunk->m_sequenceMap.resize(descriptor.m_sequences.size());
-    for (size_t sequenceIndex = 0; sequenceIndex < descriptor.m_sequences.size(); ++sequenceIndex)
+    chunk->m_sequenceMap.resize(descriptor.Sequences().size());
+    for (size_t sequenceIndex = 0; sequenceIndex < descriptor.Sequences().size(); ++sequenceIndex)
     {
-        const auto& sequenceDescriptor = descriptor.m_sequences[sequenceIndex];
+        const auto& sequenceDescriptor = descriptor.Sequences()[sequenceIndex];
         chunk->m_sequenceMap[sequenceIndex] = LoadSequence(sequenceDescriptor, descriptor.m_offset);
     }
 }
@@ -1289,31 +1285,9 @@ std::wstring TextParser<ElemType>::GetFileInfo()
 }
 
 template <class ElemType>
-bool TextParser<ElemType>::GetSequenceDescriptionByKey(const KeyType& key, SequenceDescription& result)
+bool TextParser<ElemType>::GetSequenceDescriptionByKey(const KeyType& key, SequenceDescription& r)
 {
-    if (m_primary)
-        LogicError("Matching by sequence key is not supported for primary deserilalizer.");
-
-    const auto& keys = m_indexer->GetIndex().m_keyToSequenceInChunk;
-    auto sequenceLocation = keys.find(key.m_sequence);
-    if (sequenceLocation == keys.end())
-    {
-        return false;
-    }
-
-    const auto& index = m_indexer->GetIndex();
-
-    assert(sequenceLocation->second.first < index.m_chunks.size());
-    const auto& chunk = index.m_chunks[sequenceLocation->second.first];
-
-    assert(sequenceLocation->second.second < chunk.m_sequences.size());
-    const auto& sequence = chunk.m_sequences[sequenceLocation->second.second];
-
-    result.m_chunkId = sequenceLocation->second.first;
-    result.m_indexInChunk = sequenceLocation->second.second;
-    result.m_numberOfSamples = sequence.m_numberOfSamples;
-    result.m_key = sequence.m_key;
-    return true;
+    return DataDeserializerBase::GetSequenceDescriptionByKey(m_indexer->GetIndex(), key, r);
 }
 
 template class TextParser<float>;

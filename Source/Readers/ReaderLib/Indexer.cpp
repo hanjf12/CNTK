@@ -126,9 +126,11 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
         // In this case the sequences do not have ids, they are assigned a line number.
         // If corpus expects to have sequence ids as symbolic names we throw.
         if (!corpus->IsNumericSequenceKeys())
-            RuntimeError("Corpus expects non-numeric sequence keys but the CTF input file does not have them.");
+            RuntimeError("Corpus expects non-numeric sequence keys present but the input file does not have them."
+                "Please use the configuration to enable numeric keys instead.");
 
         BuildFromLines();
+        m_index.MapSequenceKeyToLocation();
         return;
     }
 
@@ -162,6 +164,7 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
     }
 
     m_index.AddSequence(SequenceDescriptor{ KeyType{ previousId, 0 }, numberOfSamples }, sequenceOffset, m_fileOffsetEnd);
+    m_index.MapSequenceKeyToLocation();
 }
 
 void Indexer::SkipLine()
@@ -239,44 +242,57 @@ bool Indexer::TryGetSymbolicSequenceId(size_t& id, std::function<size_t(const st
 
 void Index::AddSequence(SequenceDescriptor&& sd, size_t startOffsetInFile, size_t endOffsetInFile)
 {
-    sd.SetSize(endOffsetInFile - startOffsetInFile);
+    if (m_chunks.empty() || !m_chunks.back().HasSpaceFor(sd))
+    {
+        m_chunks.push_back({ m_maxChunkSize, startOffsetInFile });
+        if (std::numeric_limits<ChunkIdType>::max() < m_chunks.size())
+            RuntimeError("Maximum number of chunks exceeded.");
+    }
 
-    assert(!m_chunks.empty());
     ChunkDescriptor* chunk = &m_chunks.back();
-    if (chunk->m_byteSize > 0 && (chunk->m_byteSize + sd.m_byteSize) > m_maxChunkSize)
-    {
-        // If the size is exceeded, finalizing the current chunk
-        // and creating a new one.
-        chunk->m_sequences.shrink_to_fit();
-
-        m_chunks.push_back({});
-        chunk = &m_chunks.back();
-        chunk->m_id = (ChunkIdType)(m_chunks.size() - 1);
-        chunk->m_offset = startOffsetInFile;
-
-        if (CHUNKID_MAX < m_chunks.size())
-        {
-            RuntimeError("Maximum number of chunks exceeded");
-        }
-    }
-
-    if (m_trackFirstSamples) // Adding number of samples where the new sequence starts.
-        chunk->m_sequenceOffsetInChunkInSamples.push_back(static_cast<uint32_t>(chunk->m_numberOfSamples));
-
-    chunk->m_byteSize += sd.m_byteSize;
-    chunk->m_numberOfSequences++;
-    chunk->m_numberOfSamples += sd.m_numberOfSamples;
-    if (!m_primary)
-    {
-        auto location = std::make_pair(chunk->m_id, static_cast<uint32_t>(chunk->m_sequences.size()));
-        if (location.second != chunk->m_sequences.size())
-            RuntimeError("Number of sequences overflow the chunk capacity.");
-
-        m_keyToSequenceInChunk.insert(std::make_pair(sd.m_key.m_sequence, location));
-    }
-
+    sd.SetSize(endOffsetInFile - startOffsetInFile);
     sd.SetOffsetInChunk(startOffsetInFile - chunk->m_offset);
-    chunk->m_sequences.push_back(sd);
+    chunk->AddSequence(std::move(sd), m_trackFirstSamples);
+}
+
+std::tuple<bool, uint32_t, uint32_t> Index::GetSequenceByKey(size_t key) const
+{
+    auto found = std::lower_bound(m_keyToSequenceInChunk.begin(), m_keyToSequenceInChunk.end(), key,
+        [](const std::tuple<size_t, size_t, size_t>& a, size_t b)
+        {
+            return std::get<0>(a) < b;
+        });
+
+    if (found == m_keyToSequenceInChunk.end() || std::get<0>(*found) != key)
+    {
+        return std::make_tuple(false, 0, 0);
+    }
+
+    return std::make_tuple(true, std::get<1>(*found), std::get<2>(*found));
+}
+
+void Index::MapSequenceKeyToLocation()
+{
+    if (m_primary)
+        return;
+
+    // Precalculate size of the mapping.
+    size_t numSequences = 0;
+    for (const auto& c : m_chunks)
+        numSequences += c.Sequences().size();
+
+    m_keyToSequenceInChunk.reserve(numSequences);
+
+    for (uint32_t i = 0; i < m_chunks.size(); i++)
+        for (uint32_t j = 0; j < m_chunks[i].Sequences().size(); j++)
+            m_keyToSequenceInChunk.emplace_back(m_chunks[i].Sequences()[j].m_key.m_sequence, i, j);
+
+    // Sort for fast retrieval afterwards
+    std::sort(m_keyToSequenceInChunk.begin(), m_keyToSequenceInChunk.end(),
+        [](const std::tuple<size_t, uint32_t, uint32_t>& a, const std::tuple<size_t, uint32_t, uint32_t>& b)
+    {
+        return std::get<0>(a) < std::get<0>(b);
+    });
 }
 
 }}}
