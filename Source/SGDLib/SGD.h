@@ -101,6 +101,12 @@ struct GradientUpdateInfo
     size_t varianceTimeConstant = 2 * 3600 * 100; // originally was: 2h of speech
 };
 
+struct BestEpoch
+{
+    double criterionMinValue = numeric_limits<double>::max();
+    int32_t epochIndex = -1;
+};
+
 // ---------------------------------------------------------------------------
 // SGDParams -- parameters for SGD
 //
@@ -419,8 +425,7 @@ protected:
                                   const std::list<ComputationNodeBasePtr>& learnableNodes,
                                   std::list<Matrix<ElemType>>& smoothedGradients, std::vector<double> smoothedCounts,
                                   const bool learnRateInitialized,
-                                  const double largestPrevLearnRatePerSample,
-                                  std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                                  const double largestPrevLearnRatePerSample);
 
     void TrainOneMiniEpochAndReloadModel(ComputationNetworkPtr net,
                                          ComputationNetworkPtr refNet,
@@ -438,8 +443,7 @@ protected:
                                          /*out*/ EpochCriterion& epochCriterion,
                                          /*out*/ std::vector<EpochCriterion>& epochEvalErrors,
                                          std::string prefixMsg,
-                                         const size_t maxNumOfSamples,
-                                         std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                                         const size_t maxNumOfSamples);
 
     size_t AdaptiveMinibatchSizing(ComputationNetworkPtr net,
                                    ComputationNetworkPtr refNet,
@@ -456,8 +460,7 @@ protected:
                                    StreamMinibatchInputs* inputMatrices,
                                    const std::list<ComputationNodeBasePtr>& learnableNodes,
                                    std::list<Matrix<ElemType>>& smoothedGradients, std::vector<double> smoothedCounts,
-                                   const double learningRateAdjustmentFactor,
-                                   std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                                   const double learningRateAdjustmentFactor);
 
     // uses a small percentage of training data of minibatch to
     // speculatively train with various MB sizes; then picks the best
@@ -475,8 +478,7 @@ protected:
                                       StreamMinibatchInputs* inputMatrices,
                                       const std::list<ComputationNodeBasePtr>& learnableNodes,
                                       std::list<Matrix<ElemType>>& smoothedGradients, std::vector<double> smoothedCounts,
-                                      const size_t minMinibatchSize, const size_t maxMinibatchSize,
-                                      std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                                      const size_t minMinibatchSize, const size_t maxMinibatchSize);
 
     // Attemps to compute the error signal for the whole utterance, which will
     // be fed to the neural network as features. Currently it is a workaround
@@ -534,8 +536,7 @@ protected:
                             const std::list<Matrix<ElemType>>& smoothedGradients,
                             const std::vector<double>& smoothedCounts,
                             const double prevCriterion,
-                            const size_t minibatchSize,
-                            const std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                            const size_t minibatchSize);
 
     bool TryLoadCheckPointInfo(const size_t epochNumber,
                                /*out*/ size_t& totalSamplesSeen,
@@ -543,16 +544,14 @@ protected:
                                std::list<Matrix<ElemType>>& smoothedGradients,
                                std::vector<double>& smoothedCounts,
                                /*out*/ double& prevCriterion,
-                               /*out*/ size_t& minibatchSize,
-                               std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                               /*out*/ size_t& minibatchSize);
     void LoadCheckPointInfo(const size_t epochNumber,
                             /*out*/ size_t& totalSamplesSeen,
                             /*out*/ double& learnRatePerSample,
                             std::list<Matrix<ElemType>>& smoothedGradients,
                             std::vector<double>& smoothedCounts,
                             /*out*/ double& prevCriterion,
-                            /*out*/ size_t& minibatchSize,
-                            std::map<std::wstring, BestEpoch>& criteriaBestEpoch);
+                            /*out*/ size_t& minibatchSize);
 
     wstring GetCheckPointFileNameForEpoch(const int epoch);
 
@@ -577,6 +576,8 @@ protected:
     std::wstring m_modelPath;
     bool m_keepCheckPointFiles;
     bool m_saveBestModelPerCriterion;
+    // Mapping from criterion to the best epoch on validation data set.
+    std::map<std::wstring, BestEpoch> m_criteriaBestEpoch;
 
     std::wstring m_trainCriterionNodeName;
     std::wstring m_evalCriterionNodeName;
