@@ -133,7 +133,7 @@ private:
     std::vector<ChunkDescriptor> m_chunks;
 
 public:
-    const std::vector<ChunkDescriptor> Chunks() const { return m_chunks; }
+    const std::vector<ChunkDescriptor>& Chunks() const { return m_chunks; }
 
     // Sorted dictionary of <sequence key, chunk index, sequence index in chunk>
     // used for fast retrieval of sequence by key for non primary deserializers.
@@ -178,6 +178,59 @@ public:
     DISABLE_COPY_AND_MOVE(Index);
 };
 
+struct Buffer
+{
+    Buffer(size_t maxSize) : m_maxSize(maxSize) {}
+
+    const char* Start() const { return m_data.data(); }
+    const char* End() const { return m_data.data() + m_data.size(); }
+
+    int64_t GetFileOffset() const { return m_fileOffsetStart + (m_current - Start()); }
+
+    // If buffer starts with UTF-8 BOM value, skip it.
+    void SkipBOMIfPresent()
+    {
+        assert(m_current == m_data.data());
+        if ((m_data.size() > 3) &&
+            (m_data[0] == '\xEF' && m_data[1] == '\xBB' && m_data[2] == '\xBF'))
+        {
+            m_current += 3;
+        }
+    }
+
+    void RefillFrom(FILE* file)
+    {
+        if (m_done)
+            return;
+
+        m_fileOffsetStart += m_data.size();
+        m_data.resize(m_maxSize);
+        m_current = m_data.data();
+        size_t bytesRead = fread(m_data.data(), 1, m_maxSize, file);
+        if (bytesRead == (size_t)-1)
+            RuntimeError("Could not read from the input file.");
+        m_data.resize(bytesRead);
+        if (!bytesRead)
+            m_done = true;
+    }
+
+    const char* MoveToNextLine()
+    {
+        m_current = (char*)memchr(m_current, g_Row_Delimiter, End() - m_current);
+        if (m_current)
+            ++m_current;
+        return m_current;
+    }
+
+    bool Eof() const { return m_done; }
+
+    const size_t m_maxSize;
+    std::vector<char> m_data;
+    const char* m_current = 0;
+    int64_t m_fileOffsetStart = 0;
+    bool m_done = false;
+};
+
 // A helper class that does a pass over the input file building up
 // an index consisting of sequence and chunk descriptors (which among 
 // others specify size and file offset of the respective structure).
@@ -202,18 +255,8 @@ public:
 
 private:
     FILE* m_file;
-
-    int64_t m_fileOffsetStart;
-    int64_t m_fileOffsetEnd;
-
-    std::unique_ptr<char[]> m_buffer;
-    const size_t m_bufferSize;
-    const char* m_bufferStart;
-    const char* m_bufferEnd;
-    const char* m_pos; // buffer index
-
-    bool m_done; // true, when all input was processed
-
+    int64_t m_fileSize;
+    Buffer m_buffer;
     bool m_hasSequenceIds; // true, when input contains one sequence per line 
                            // or when sequence id column was ignored during indexing.
 
@@ -221,10 +264,6 @@ private:
     Index m_index;
 
     const char m_streamPrefix;
-
-    // fills up the buffer with data from file, all previously buffered data
-    // will be overwritten.
-    void RefillBuffer();
 
     // Moves the buffer position to the beginning of the next line.
     void SkipLine();
@@ -245,9 +284,6 @@ private:
     // Does not do any sequence parsing, instead uses line number as 
     // the corresponding sequence id.
     void BuildFromLines();
-
-    // Returns current offset in the input file (in bytes). 
-    int64_t GetFileOffset() const { return m_fileOffsetStart + (m_pos - m_bufferStart); }
 
     DISABLE_COPY_AND_MOVE(Indexer);
 };

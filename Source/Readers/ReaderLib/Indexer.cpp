@@ -10,80 +10,44 @@
 
 using std::string;
 
-const static char ROW_DELIMITER = '\n';
-
 namespace Microsoft { namespace MSR { namespace CNTK {
 
 Indexer::Indexer(FILE* file, bool primary, bool skipSequenceIds, char streamPrefix, size_t chunkSize, size_t bufferSize) :
     m_streamPrefix(streamPrefix),
-    m_bufferSize(bufferSize),
+    m_buffer(bufferSize),
     m_file(file),
-    m_fileOffsetStart(0),
-    m_fileOffsetEnd(0),
-    m_buffer(new char[bufferSize + 1]),
-    m_bufferStart(nullptr),
-    m_bufferEnd(nullptr),
-    m_pos(nullptr),
-    m_done(false),
     m_hasSequenceIds(!skipSequenceIds),
     m_index(chunkSize, primary)
 {
     if (m_file == nullptr)
-    {
         RuntimeError("Input file not open for reading");
-    }
-}
-
-void Indexer::RefillBuffer()
-{
-    if (!m_done)
-    {
-        size_t bytesRead = fread(m_buffer.get(), 1, m_bufferSize, m_file);
-        if (bytesRead == (size_t)-1)
-            RuntimeError("Could not read from the input file.");
-        if (bytesRead == 0)
-        {
-            m_done = true;
-        }
-        else
-        {
-            m_fileOffsetStart = m_fileOffsetEnd;
-            m_fileOffsetEnd += bytesRead;
-            m_bufferStart = m_buffer.get();
-            m_pos = m_bufferStart;
-            m_bufferEnd = m_bufferStart + bytesRead;
-        }
-    }
+    m_fileSize = filesize(file);
 }
 
 void Indexer::BuildFromLines()
 {
-    assert(m_pos == m_bufferStart);
     m_hasSequenceIds = false;
     size_t lines = 0;
-    int64_t offset = GetFileOffset();
-    while (!m_done)
+    int64_t offset = m_buffer.GetFileOffset();
+    while (!m_buffer.Eof())
     {
-        m_pos = (char*)memchr(m_pos, ROW_DELIMITER, m_bufferEnd - m_pos);
-        if (m_pos)
+        auto pos = m_buffer.MoveToNextLine();
+        if (pos)
         {
             auto sequenceOffset = offset;
-            offset = GetFileOffset() + 1;
+            offset = m_buffer.GetFileOffset() + 1;
             m_index.AddSequence(SequenceDescriptor{ KeyType{ lines, 0 }, 1 }, sequenceOffset, offset);
-            ++m_pos;
             ++lines;
         }
         else
-        {
-            RefillBuffer();
-        }
+            m_buffer.RefillFrom(m_file);
     }
 
-    if (offset < m_fileOffsetEnd)
+    if (offset < m_fileSize)
     {
         // There's a number of characters, not terminated by a newline,
         // add a sequence to the index, parser will have to deal with it.
-        m_index.AddSequence(SequenceDescriptor{ KeyType{ lines, 0 }, 1 }, offset, m_fileOffsetEnd);
+        m_index.AddSequence(SequenceDescriptor{ KeyType{ lines, 0 }, 1 }, offset, m_fileSize);
     }
 }
 
@@ -102,25 +66,16 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
     else
         tryGetSequenceId = [this, corpus](size_t& id) { return TryGetSymbolicSequenceId(id, corpus->KeyToId); };
 
-    m_index.Reserve(filesize(m_file));
+    m_index.Reserve(m_fileSize);
 
-    RefillBuffer(); // read the first block of data
-    if (m_done)
-    {
+    m_buffer.RefillFrom(m_file);
+    if (m_buffer.Eof())
         RuntimeError("Input file is empty");
-    }
 
-    if ((m_bufferEnd - m_bufferStart > 3) &&
-        (m_bufferStart[0] == '\xEF' && m_bufferStart[1] == '\xBB' && m_bufferStart[2] == '\xBF'))
-    {
-        // input file contains UTF-8 BOM value, skip it.
-        m_pos += 3;
-        m_fileOffsetStart += 3;
-        m_bufferStart += 3;
-    }
+    m_buffer.SkipBOMIfPresent();
 
     // check the first byte and decide what to do next
-    if (!m_hasSequenceIds || m_bufferStart[0] == m_streamPrefix)
+    if (!m_hasSequenceIds || *m_buffer.m_current == m_streamPrefix)
     {
         // Skip sequence id parsing, treat lines as individual sequences
         // In this case the sequences do not have ids, they are assigned a line number.
@@ -135,7 +90,7 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
     }
 
     size_t id = 0;
-    int64_t offset = GetFileOffset();
+    int64_t offset = m_buffer.GetFileOffset();
     // read the very first sequence id
     if (!tryGetSequenceId(id))
     {
@@ -145,13 +100,13 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
     auto sequenceOffset = offset;
     size_t previousId = id;
     uint32_t numberOfSamples = 0;
-    while (!m_done)
+    while (!m_buffer.Eof())
     {
         SkipLine(); // ignore whatever is left on this line.
-        offset = GetFileOffset(); // a new line starts at this offset;
+        offset = m_buffer.GetFileOffset(); // a new line starts at this offset;
         numberOfSamples++;
 
-        if (!m_done && tryGetSequenceId(id) && id != previousId)
+        if (!m_buffer.Eof() && tryGetSequenceId(id) && id != previousId)
         {
             // found a new sequence, which starts at the [offset] bytes into the file
             // adding the previous one to the index.
@@ -163,25 +118,24 @@ void Indexer::Build(CorpusDescriptorPtr corpus)
         }
     }
 
-    m_index.AddSequence(SequenceDescriptor{ KeyType{ previousId, 0 }, numberOfSamples }, sequenceOffset, m_fileOffsetEnd);
+    m_index.AddSequence(SequenceDescriptor{ KeyType{ previousId, 0 }, numberOfSamples }, sequenceOffset, m_fileSize);
     m_index.MapSequenceKeyToLocation();
 }
 
 void Indexer::SkipLine()
 {
-    while (!m_done)
+    while (!m_buffer.Eof())
     {
-        m_pos = (char*)memchr(m_pos, ROW_DELIMITER, m_bufferEnd - m_pos);
-        if (m_pos)
+        auto pos = m_buffer.MoveToNextLine();
+        if (pos)
         {
             //found a new-line character
-            if (++m_pos == m_bufferEnd)
-            {
-                RefillBuffer();
-            }
+            if (pos == m_buffer.End())
+                m_buffer.RefillFrom(m_file);
             return;
         }
-        RefillBuffer();
+
+        m_buffer.RefillFrom(m_file);
     }
 }
 
@@ -189,9 +143,9 @@ bool Indexer::TryGetNumericSequenceId(size_t& id)
 {
     bool found = false;
     id = 0;
-    while (!m_done)
+    while (!m_buffer.Eof())
     {
-        char c = *m_pos;
+        char c = *m_buffer.m_current;
         if (!isdigit(c))
         {
             // Stop as soon as there's a non-digit character
@@ -200,10 +154,10 @@ bool Indexer::TryGetNumericSequenceId(size_t& id)
 
         id = id * 10 + (c - '0');
         found = true;
-        ++m_pos;
+        ++m_buffer.m_current;
 
-        if (m_pos == m_bufferEnd)
-            RefillBuffer();
+        if (m_buffer.m_current == m_buffer.End())
+            m_buffer.RefillFrom(m_file);
     }
 
     // reached EOF without hitting the pipe character,
@@ -217,9 +171,9 @@ bool Indexer::TryGetSymbolicSequenceId(size_t& id, std::function<size_t(const st
     id = 0;
     std::string key;
     key.reserve(256);
-    while (!m_done)
+    while (!m_buffer.Eof())
     {
-        char c = *m_pos;
+        char c = *m_buffer.m_current;
         if (isspace(c))
         {
             if (found)
@@ -229,10 +183,10 @@ bool Indexer::TryGetSymbolicSequenceId(size_t& id, std::function<size_t(const st
 
         key += c;
         found = true;
-        ++m_pos;
+        ++m_buffer.m_current;
 
-        if(m_pos == m_bufferEnd)
-            RefillBuffer();
+        if(m_buffer.m_current == m_buffer.End())
+            m_buffer.RefillFrom(m_file);
     }
 
     // reached EOF without hitting the pipe character,
